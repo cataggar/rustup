@@ -127,8 +127,9 @@ jobs:
           upstream SHA-256 sidecars — not rebuilt here. Same platform set as
           [`cataggar/wamr`](https://github.com/cataggar/wamr).
 
-          See the [README](https://github.com/cataggar/rustup/blob/ghr/README.md), including how
-          to select an asset explicitly on musl or riscv64 hosts.
+          `ghr` (v0.5.0-dev.5+) auto-detects OS, architecture, and glibc-vs-musl, so the
+          command above works on every supported host, including Alpine/musl and `riscv64`.
+          See the [README](https://github.com/cataggar/rustup/blob/ghr/README.md) for more.
           EOF
           sed -i "s/__TAG__/$TAG/g" notes.md
 

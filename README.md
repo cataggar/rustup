@@ -61,9 +61,13 @@ with a `.sha256` sidecar that `ghr` verifies on download.
 
 ### Picking an asset explicitly
 
-`ghr` auto-detects your OS and architecture but does **not** detect glibc vs
-musl, and does not yet recognise `riscv64`. On a musl host (e.g. Alpine), or on
-riscv64, select the asset explicitly:
+`ghr` auto-detects your OS, architecture, **and** C library (glibc vs musl), so
+a plain `ghr install cataggar/rustup` resolves to the right asset on every
+supported host — including Alpine/musl and `riscv64` — as of
+[ghr v0.5.0-dev.5](https://github.com/cataggar/ghr/releases/tag/v0.5.0-dev.5)
+([cataggar/ghr#116](https://github.com/cataggar/ghr/issues/116)).
+
+On an older `ghr`, or to force a specific build, name the asset directly:
 
 ```sh
 ghr install cataggar/rustup/rustup-1.29.0-x86_64-unknown-linux-musl.tar.gz
