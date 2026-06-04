@@ -1,0 +1,140 @@
+name: Release
+
+# Mirror an official rustup release to this fork's GitHub Releases so it can be
+# installed with `ghr install cataggar/rustup`. Binaries are the official
+# `rustup-init` from static.rust-lang.org, repackaged (not rebuilt) for the same
+# platform set as cataggar/wamr.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream rustup version to mirror, e.g. 1.29.0 (see https://github.com/rust-lang/rustup/releases)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror rustup ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate version input
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag must be a rustup version like 1.29.0 (got '$TAG')"
+            exit 1
+          fi
+
+      - name: Verify upstream rust-lang/rustup tag exists
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/rust-lang/rustup/git/refs/tags/$TAG")
+          if [ "$code" != "200" ]; then
+            echo "::error::rust-lang/rustup has no tag '$TAG' (HTTP $code) — see https://github.com/rust-lang/rustup/releases/tag/$TAG"
+            exit 1
+          fi
+
+      - name: Download and repackage rustup-init for each platform
+        run: |
+          set -euo pipefail
+          base="https://static.rust-lang.org/rustup/archive/$TAG"
+          mkdir -p dist
+
+          # Same platform set as cataggar/wamr, expressed as Rust target triples.
+          triples="
+          x86_64-unknown-linux-gnu
+          aarch64-unknown-linux-gnu
+          x86_64-unknown-linux-musl
+          aarch64-unknown-linux-musl
+          riscv64gc-unknown-linux-gnu
+          aarch64-apple-darwin
+          x86_64-apple-darwin
+          x86_64-pc-windows-msvc
+          aarch64-pc-windows-msvc
+          "
+
+          for triple in $triples; do
+            case "$triple" in
+              *windows*) bin="rustup-init.exe" ;;
+              *)         bin="rustup-init" ;;
+            esac
+
+            work="work/$triple"
+            mkdir -p "$work"
+            url="$base/$triple/$bin"
+            echo "==> $url"
+            curl -fSL --retry 3 -o "$work/$bin" "$url"
+            curl -fSL --retry 3 -o "$work/$bin.sha256" "$url.sha256"
+
+            # Verify against the upstream SHA-256 sidecar before repackaging.
+            # Upstream formats vary by platform: Linux sidecars are
+            # "<hex> *./rustup-init" while Windows sidecars are bare hex, so
+            # extract the first 64-hex token and compare rather than `-c`.
+            expected=$(grep -oiE '[0-9a-f]{64}' "$work/$bin.sha256" | head -n1)
+            actual=$(sha256sum "$work/$bin" | awk '{print $1}')
+            if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+              echo "::error::SHA-256 mismatch for $triple/$bin (expected '$expected', got '$actual')"
+              exit 1
+            fi
+            chmod +x "$work/$bin"
+
+            pkg="rustup-$TAG-$triple"
+            case "$triple" in
+              *windows*)
+                ( cd "$work" && zip -q "$GITHUB_WORKSPACE/dist/$pkg.zip" "$bin" )
+                ( cd dist && sha256sum "$pkg.zip" > "$pkg.zip.sha256" )
+                ;;
+              *)
+                tar -C "$work" -czf "dist/$pkg.tar.gz" "$bin"
+                ( cd dist && sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256" )
+                ;;
+            esac
+          done
+
+          echo "--- assets ---"
+          ls -l dist
+
+      - name: Create or update the release
+        run: |
+          set -euo pipefail
+
+          cat > notes.md <<'EOF'
+          Mirror of [rustup __TAG__](https://github.com/rust-lang/rustup/releases/tag/__TAG__),
+          repackaged so it can be installed with [`ghr`](https://github.com/cataggar/ghr):
+
+          ```sh
+          ghr install cataggar/rustup@__TAG__
+          rustup-init -y
+          ```
+
+          These are the **official** `rustup-init` binaries downloaded from
+          `https://static.rust-lang.org/rustup/archive/__TAG__/` and verified against their
+          upstream SHA-256 sidecars — not rebuilt here. Same platform set as
+          [`cataggar/wamr`](https://github.com/cataggar/wamr).
+
+          See the [README](https://github.com/cataggar/rustup/blob/ghr/README.md), including how
+          to select an asset explicitly on musl or riscv64 hosts.
+          EOF
+          sed -i "s/__TAG__/$TAG/g" notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "rustup $TAG" --notes-file notes.md
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "rustup $TAG" --notes-file notes.md
+          fi
